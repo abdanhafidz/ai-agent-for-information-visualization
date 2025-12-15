@@ -18,15 +18,13 @@ async def analyze_data(
 ):
     try:
         if mock:
-            result = service.mock_analyze(request.prompt, request.dataset_id)
+            # result = service.mock_analyze(request.prompt, request.dataset_ids) # Mock not implemented for multi yet
+            # Fallback for now or raise error? User wants real inference mostly.
+            # Let's just use real analyze for now or empty list
+             result = [] 
         else:
-            result = service.analyze(request.prompt, request.dataset_id)
+            result = service.analyze(request.prompt, request.dataset_ids)
             
-        return AgentResponse(
-            chart_config=result.get("chart_config"),
-            explanation=result.get("explanation"),
-            sql_query=result.get("sql_query"),
-            query_result=result.get("query_result")
-        )
+        return AgentResponse(results=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -89,50 +89,83 @@ def handle_search(search_query, full_df):
     # Reset to page 0 on new search
     return update_table_view(search_query, full_df, 0)
 
-def query_system(dataset_str, command):
-    if not dataset_str or not command:
-        return None, pd.DataFrame(), pd.DataFrame(), "DEFAULT: WAITING FOR INPUT", ""
-        
+def query_system(dataset_strs, command, progress=gr.Progress()):
+    if not dataset_strs or not command:
+        return [], "⚠️ Please select a dataset and enter a command."
+
     try:
-        dataset_id = int(dataset_str.split(':')[0])
-        payload = {"dataset_id": dataset_id, "prompt": command}
+        progress(0.1, desc="Initializing Query...")
         
+        # data_strs is a list of "{id}: name..."
+        print(f"DEBUG: query_system dataset_strs: {dataset_strs}")
+        
+        valid_ids = []
+        for s in dataset_strs:
+            if isinstance(s, str) and ':' in s:
+                try:
+                    valid_ids.append(int(s.split(':')[0]))
+                except:
+                    pass
+        
+        if not valid_ids:
+             return [], "⚠️ No valid datasets selected."
+             
+        dataset_ids = valid_ids
+        # dataset_ids = [int(s.split(':')[0]) for s in dataset_strs if s]
+        payload = {"dataset_ids": dataset_ids, "prompt": command}
+        
+        progress(0.3, desc=f"Analyzing {len(dataset_ids)} datasets with AI...")
+
+        # NOTE: This single call waits for ALL datasets. 
+        # For better UX with many datasets, we would parallelize or stream, 
+        # but for now we just show we are working.
         response = requests.post(f"{API_BASE_URL}/agent/analyze", json=payload)
         response.raise_for_status()
+        
+        progress(0.8, desc="Processing Results...")
         data = response.json()
         
-        chart_config = data.get("chart_config", {})
-        explanation = data.get("explanation", "No explanation provided.")
-        sql_query = data.get("sql_query", "")
+        # data is {"results": [...]}
+        results = data.get("results", [])
         
-        # Parse Result Table
-        raw_result = data.get("query_result", "[]")
-        print(f"DEBUG: Raw Query Result: {raw_result[:500]}") # Log first 500 chars
-        try:
-            result_list = json.loads(raw_result)
-            result_df = pd.DataFrame(result_list)
-        except:
-            result_df = pd.DataFrame({"Error": ["Failed to parse result table"]})
-        
-        fig = None
-        if chart_config:
-            fig = go.Figure(data=chart_config.get("data"), layout=chart_config.get("layout"))
-            fig.update_layout(
-                template="plotly_dark", 
-                paper_bgcolor="rgba(0,0,0,0)", 
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(family="Inter, sans-serif", color="#e5e7eb"),
-                margin=dict(l=40, r=40, t=50, b=40)
-            )
+        # Process results for rendering (parse JSON configs and results)
+        processed_results = []
+        for res in results:
+            chart_config = res.get("chart_config", {})
+            fig = None
+            if chart_config:
+                fig = go.Figure(data=chart_config.get("data"), layout=chart_config.get("layout"))
+                fig.update_layout(
+                    template="plotly_dark", 
+                    paper_bgcolor="rgba(0,0,0,0)", 
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Inter, sans-serif", color="#e5e7eb"),
+                    margin=dict(l=40, r=40, t=50, b=40)
+                )
+            
+            # Parse table
+            raw_result = res.get("query_result", "[]")
+            try:
+                result_list = json.loads(raw_result)
+                result_df = pd.DataFrame(result_list)
+            except:
+                result_df = pd.DataFrame({"Error": ["Failed to parse result table"]})
 
-        # Return result_df twice: once for View (sliced), once for State (full)
-        # We must apply initial pagination (Page 0)
-        visible_df, page_label, page_index = update_table_view("", result_df, 0)
-        
-        return fig, visible_df, result_df, explanation, sql_query, page_index, page_label
+            processed_results.append({
+                "dataset_id": res.get("dataset_id"),
+                "fig": fig,
+                "df": result_df,
+                "explanation": res.get("explanation"),
+                "sql_query": res.get("sql_query")
+            })
+            
+        progress(1.0, desc="Done!")
+        return processed_results, "✅ Query Completed Successfully"
 
     except Exception as e:
-        return None, pd.DataFrame(), pd.DataFrame(), f"ERROR: {str(e)}", "", 0, "Page 0 of 0"
+        print(f"Error querying system: {e}")
+        gr.Warning(f"Query failed: {str(e)}")
+        return [], f"❌ Error: {str(e)}"
 
 # --- CSS Refresh ---
 nexus_css = """
@@ -183,64 +216,85 @@ body::before {
 
 /* Terminal */
 #terminal-area { position: sticky; bottom: 20px; background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; margin-top: auto; z-index: 100; }
+.status-msg { 
+    min-height: 50px !important; 
+    height: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: rgba(0,0,0,0.2) !important;
+    border-radius: 6px !important;
+    margin-top: 5px !important;
+}
 """
 
 # --- APP LAYOUT ---
 with gr.Blocks(title="NEXUS v7", css=nexus_css) as demo:
-    # State to hold the full dataset for filtering
-    result_state = gr.State()
-    # State for Current Page Index
-    page_state = gr.State(value=0)
+    # State to hold the full list of results
+    results_state = gr.State(value=[])
+    
+    # States for Data Center (kept for compatibility if needed, though mostly local variables)
+    # (No global state needed for Data Center as it was direct wiring, but let's check)
 
     with gr.Column(elem_id="app-wrapper"):
         
         # HEADER
-        # ... (Header unchanged)
         with gr.Group(elem_id="top-header"):
             with gr.Row():
-                gr.HTML('<div class="brand-title">NEXUS <span style="color:#22c55e">///</span> ANALYTICS</div>')
-                gr.HTML('<div style="color:var(--text-dim); text-align:right;">SYSTEM READY v7.3</div>')
+                gr.HTML('<div class="brand-title" style="color:green">◥꧁དℭ℟Åℤ¥༒₭ÏḼḼ℥℟ཌ꧂◤</div>')
 
         # TABS
         with gr.Tabs():
             
             # --- TAB 1: DASHBOARD ---
             with gr.TabItem("📊 INTELLIGENCE DASHBOARD"):
-                
-                # 1. Main Visualization (Top Middle)
-                with gr.Group(elem_classes="panel"):
-                    gr.Markdown("### 📈 VISUALIZATION")
-                    plot_output = gr.Plot(label="", container=False)
-                
-                # 2. Result Table with Search (Below Viz)
-                with gr.Group(elem_classes="panel"):
-                    with gr.Row(variant="compact"):
-                        gr.Markdown("### 🔢 QUERY RESULTS")
-                        search_box = gr.Textbox(
-                            show_label=False, 
-                            placeholder="🔍 Search / Filter results...", 
-                            container=False, 
-                            scale=0, 
-                            min_width=300
-                        )
-                    result_output = gr.Dataframe(interactive=False, wrap=True)
-                    
-                    # Pagination Controls
-                    with gr.Row(equal_height=True):
-                        btn_prev = gr.Button("◀ PREV", size="sm")
-                        label_page = gr.Textbox(value="Page 0 of 0", show_label=False, container=False, interactive=False, text_align="center")
-                        btn_next = gr.Button("NEXT ▶", size="sm")
-
-                # 3. Insights & SQL (Bottom Row)
-                with gr.Row():
-                    with gr.Column(scale=1):
+                        # TERMINAL
+                with gr.Group(elem_id="terminal-area"):
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            # Multi-select enabled
+                            dataset_selector = gr.Dropdown(choices=get_datasets(), label="ACTIVE DATASETS", container=True, multiselect=True)
+                        with gr.Column(scale=4):
+                            cmd_input = gr.Textbox(show_label=False, placeholder="Enter natural language query (e.g., 'Show trend of sales over time')...", container=False, autofocus=True, lines=1)
+                            status_msg = gr.Markdown("", elem_classes="status-msg")
+                        with gr.Column(scale=0, min_width=100):
+                            run_btn = gr.Button("RUN", elem_classes="nexus-btn")
+                # Dynamic Rendering Area
+                @gr.render(inputs=results_state)
+                def render_dashboard(results):
+                    if not results:
+                        gr.Markdown("### Waiting for input...", elem_classes="panel")
+                        return
+                        
+                    for res in results:
+                        dataset_id = res.get("dataset_id")
+                        fig = res.get("fig")
+                        df = res.get("df")
+                        explanation = res.get("explanation")
+                        sql_query = res.get("sql_query")
+                        
                         with gr.Group(elem_classes="panel"):
-                            gr.Markdown("### 🧠 INSIGHTS")
-                            expl_output = gr.Markdown("_Execute a query to see insights..._")
-                    with gr.Column(scale=1):
-                        with gr.Group(elem_classes="panel"):
-                            gr.Markdown("### ⚙️ SQL TRACE")
-                            sql_output = gr.Code(language="sql", elem_id="sql-code")
+                            gr.Markdown(f"### 🔮 Analysis Result for Dataset {dataset_id}")
+                            
+                            # 1. Viz
+                            if fig:
+                                gr.Plot(value=fig, label=f"Visualization {dataset_id}", container=False)
+                            
+                            # 2. Results Table
+                            if df is not None and not df.empty:
+                                with gr.Accordion(f"Query Results ({len(df)} rows)", open=True): 
+                                    gr.Dataframe(value=df, interactive=False, wrap=True)
+                            
+                            # 3. Insights & SQL
+                            with gr.Row():
+                                with gr.Column(scale=1):
+                                    gr.Markdown("#### 🧠 INSIGHTS")
+                                    gr.HTML("<div style = 'padding:10px'>" + explanation + "</div>")
+                                with gr.Column(scale=1):
+                                    gr.Markdown("#### ⚙️ SQL TRACE")
+                                    gr.Code(value=sql_query or "-- No SQL", language="sql")
+                                    
+                            gr.Markdown("---") # Separator
 
             # --- TAB 2: DATA CENTER ---
             with gr.TabItem("💾 DATA CENTER"):
@@ -261,34 +315,44 @@ with gr.Blocks(title="NEXUS v7", css=nexus_css) as demo:
                                 refresh_preview_btn = gr.Button("REFRESH TABLE", size="sm")
                             preview_table = gr.Dataframe(interactive=False)
 
-        with gr.Group(elem_id="terminal-area"):
-            with gr.Row():
-                with gr.Column(scale=1):
-                    dataset_selector = gr.Dropdown(choices=get_datasets(), label="ACTIVE DATASET", container=True)
-                with gr.Column(scale=4):
-                    cmd_input = gr.Textbox(show_label=False, placeholder="Enter natural language query (e.g., 'Show trend of sales over time')...", container=False, autofocus=True, lines=1)
-                with gr.Column(scale=0, min_width=100):
-                    run_btn = gr.Button("RUN", elem_classes="nexus-btn")
+
 
     # --- WIRING ---
     
-    # 1. Search Logic (Resets to Page 0)
-    search_box.change(handle_search, inputs=[search_box, result_state], outputs=[result_output, label_page, page_state])
+    # 1. Dashboard Logic
+    # Update results_state, which triggers the render function automatically
+    cmd_input.submit(query_system, inputs=[dataset_selector, cmd_input], outputs=[results_state, status_msg], show_progress="full")
+    run_btn.click(query_system, inputs=[dataset_selector, cmd_input], outputs=[results_state, status_msg], show_progress="full")
     
-    # 2. Pagination Logic
-    btn_prev.click(handle_prev, inputs=[search_box, result_state, page_state], outputs=[result_output, label_page, page_state])
-    btn_next.click(handle_next, inputs=[search_box, result_state, page_state], outputs=[result_output, label_page, page_state])
-
-    # 3. Dashboard Logic (Returns 7 outputs: Plot, TableView, TableState, Text, SQL, PageState, PageLabel)
-    cmd_input.submit(query_system, inputs=[dataset_selector, cmd_input], outputs=[plot_output, result_output, result_state, expl_output, sql_output, page_state, label_page])
-    run_btn.click(query_system, inputs=[dataset_selector, cmd_input], outputs=[plot_output, result_output, result_state, expl_output, sql_output, page_state, label_page])
-    
-    # 4. Data Center Logic
+    # 2. Data Center Logic
     upload_btn.click(upload_file, inputs=file_in, outputs=[upload_msg, dataset_selector])
     
     # Update preview when dataset changes or refresh clicked
-    dataset_selector.change(get_preview, inputs=dataset_selector, outputs=preview_table)
-    refresh_preview_btn.click(get_preview, inputs=dataset_selector, outputs=preview_table)
+    # NOTE: dataset_selector is now a list. get_preview expects strings.
+    # We should probably only preview the *first* selected dataset or disable preview for multi.
+    # Let's handle the list in get_preview to avoid errors, or just take the first one.
+    
+    def get_preview_wrapper(dataset_strs):
+        try:
+            print(f"DEBUG: get_preview_wrapper input: {dataset_strs} (type: {type(dataset_strs)})")
+            if not dataset_strs: return pd.DataFrame()
+            if isinstance(dataset_strs, list) and len(dataset_strs) > 0:
+                # Ensure element is string
+                first = dataset_strs[0]
+                if isinstance(first, str):
+                    return get_preview(first)
+                else:
+                    return pd.DataFrame({"Error": [f"Invalid dataset format: {type(first)}"]})
+            elif isinstance(dataset_strs, str):
+                return get_preview(dataset_strs)
+            else:
+                return pd.DataFrame()
+        except Exception as e:
+            print(f"DEBUG: Preview Error: {e}")
+            return pd.DataFrame({"Error": [f"Preview failed: {str(e)}"]})
+
+    dataset_selector.change(get_preview_wrapper, inputs=dataset_selector, outputs=preview_table)
+    refresh_preview_btn.click(get_preview_wrapper, inputs=dataset_selector, outputs=preview_table)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7866)
+    demo.queue().launch(server_name="0.0.0.0", server_port=7866)

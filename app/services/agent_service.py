@@ -108,5 +108,25 @@ class AgentService:
             print(f"Error parsing viz: {e}")
             return {"chart_config": {}, "explanation": "Failed to generate visualization."}
 
-    def analyze(self, question: str, dataset_id: int):
-        return self.workflow.invoke({"question": question, "dataset_id": dataset_id})
+    def analyze(self, question: str, dataset_ids: list[int]):
+        results = []
+        for ds_id in dataset_ids:
+            try:
+                res = self.workflow.invoke({"question": question, "dataset_id": ds_id})
+                results.append({
+                    "dataset_id": ds_id,
+                    "chart_config": res.get("chart_config"),
+                    "explanation": res.get("explanation"),
+                    "sql_query": res.get("sql_query"),
+                    "query_result": res.get("query_result")
+                })
+            except Exception as e:
+                print(f"Error processing dataset {ds_id}: {e}")
+                results.append({
+                    "dataset_id": ds_id,
+                    "explanation": f"Error processing dataset {ds_id}: {str(e)}",
+                    "chart_config": None,
+                    "sql_query": None,
+                    "query_result": "[]"
+                })
+        return results
