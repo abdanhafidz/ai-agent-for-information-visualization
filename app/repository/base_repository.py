@@ -1,5 +1,5 @@
 from contextlib import AbstractContextManager
-from typing import Any, Callable, Type, TypeVar
+from typing import Any, Callable, Type, TypeVar, Generic
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -12,7 +12,7 @@ from app.util.query_builder import dict_to_sqlalchemy_filter_options
 T = TypeVar("T", bound=BaseModel)
 
 
-class BaseRepository:
+class BaseRepository(Generic[T]):
     def __init__(self, session_factory: Callable[..., AbstractContextManager[Session]], model: Type[T]) -> None:
         self.session_factory = session_factory
         self.model = model
@@ -58,6 +58,13 @@ class BaseRepository:
                     "total_count": total_count,
                 },
             }
+
+    def read_list(self) -> list[T]:
+        with self.session_factory() as session:
+            items = session.query(self.model).all()
+            for item in items:
+                session.expunge(item)
+            return items
 
     def read_by_id(self, id: int, eager: bool = False):
         with self.session_factory() as session:

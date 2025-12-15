@@ -1,9 +1,11 @@
 from contextlib import AbstractContextManager, contextmanager
 from typing import Any, Generator
 
+
 from sqlalchemy import create_engine, orm
 from sqlalchemy.ext.declarative import as_declarative, declared_attr
 from sqlalchemy.orm import Session
+from sqlmodel import SQLModel
 
 
 @as_declarative()
@@ -40,7 +42,7 @@ class Database:
         )
 
     def create_database(self) -> None:
-        BaseModel.metadata.create_all(self._engine)
+        SQLModel.metadata.create_all(self._engine)
 
     @contextmanager
     def session(self):

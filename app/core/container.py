@@ -15,6 +15,7 @@ class Container(containers.DeclarativeContainer):
             "app.api.v1.endpoints.user",
             "app.api.v1.endpoints.dataset",
             "app.api.v1.endpoints.agent",
+            "app.api.v1.endpoints.visualization",
             "app.api.v2.endpoints.auth",
             "app.core.dependencies",
         ]
@@ -27,6 +28,7 @@ class Container(containers.DeclarativeContainer):
     user_repository = providers.Factory(UserRepository, session_factory=db.provided.session)
 
     dataset_repository = providers.Factory(DatasetRepository, session_factory=db.provided.session)
+    visualization_repository = providers.Factory(VisualizationRepository, session_factory=db.provided.session)
 
     auth_service = providers.Factory(AuthService, user_repository=user_repository)
     post_service = providers.Factory(PostService, post_repository=post_repository, tag_repository=tag_repository)
@@ -34,3 +36,4 @@ class Container(containers.DeclarativeContainer):
     user_service = providers.Factory(UserService, user_repository=user_repository)
     dataset_service = providers.Factory(DatasetService, repository=dataset_repository)
     agent_service = providers.Factory(AgentService, repository=dataset_repository)
+    visualization_service = providers.Factory(VisualizationService, repository=visualization_repository)

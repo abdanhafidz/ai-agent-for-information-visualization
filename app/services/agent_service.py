@@ -22,7 +22,10 @@ import ast
 class AgentService:
     def __init__(self, repository: DatasetRepository, llm=None):
         self.repository = repository
-        self.llm = llm or ChatOpenAI(model="gpt-4o", temperature=0)
+        self.llm = llm or ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            model="gpt-4o",
+            temperature=0)
         self.workflow = self._build_workflow()
 
     def _build_workflow(self):
@@ -87,12 +90,17 @@ class AgentService:
         }}
         """
         response = self.llm.invoke([HumanMessage(content=prompt)])
+        print(f"DEBUG: Viz Response: {response.content}")
         try:
             content = response.content.strip()
-            # Robust Parsing
-            start = content.find('{')
-            end = content.rfind('}')
-            if start != -1 and end != -1: content = content[start : end + 1]
+            # Use regex to find the main JSON object
+            match = re.search(r'\{.*\}', content, re.DOTALL)
+            if match:
+                content = match.group(0)
+            else:
+                # If no JSON found, raise error
+                raise ValueError("No JSON found in response")
+
             content = re.sub(r",\s*([\]}])", r"\1", content) # Remove trailing commas
             
             try:
@@ -106,7 +114,7 @@ class AgentService:
             }
         except Exception as e:
             print(f"Error parsing viz: {e}")
-            return {"chart_config": {}, "explanation": "Failed to generate visualization."}
+            return {"chart_config": {}, "explanation": f"Failed to generate visualization. Error: {str(e)}"}
 
     def analyze(self, question: str, dataset_id: int):
         return self.workflow.invoke({"question": question, "dataset_id": dataset_id})

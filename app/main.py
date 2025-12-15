@@ -6,6 +6,8 @@ from app.api.v2.routes import routers as v2_routers
 from app.core.config import configs
 from app.core.container import Container
 from app.util.class_object import singleton
+from app.model.dataset import Dataset
+from app.model.visualization import Visualization
 
 
 @singleton
@@ -21,7 +23,7 @@ class AppCreator:
         # set db and container
         self.container = Container()
         self.db = self.container.db()
-        # self.db.create_database()
+        self.db.create_database()
 
         # set cors
         if configs.BACKEND_CORS_ORIGINS:
